@@ -19,18 +19,14 @@ db.serialize(() => {
     db.run(`
         CREATE TABLE IF NOT EXISTS hero_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-
             hero_id TEXT,
-
             tier TEXT,
             map_name TEXT,
-
             pickrate REAL,
             winrate REAL,
             banrate REAL,
-
+            patch TEXT,
             collected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-
             FOREIGN KEY(hero_id)
                 REFERENCES heroes(hero_id)
         );
