@@ -1,10 +1,11 @@
 const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
-const db = new sqlite3.Database('./db.sqlite');
-module.exports = db;
+const dbPath = path.join(__dirname, '..', 'db.sqlite'); 
+const db = new sqlite3.Database(dbPath);
+console.log(`[Node Server] DB File Path: ${dbPath}`);
 
 db.serialize(() => {
-
     db.run(`
         CREATE TABLE IF NOT EXISTS heroes (
             hero_id TEXT PRIMARY KEY,
@@ -27,9 +28,9 @@ db.serialize(() => {
             banrate REAL,
             patch TEXT,
             collected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(hero_id)
-                REFERENCES heroes(hero_id)
+            FOREIGN KEY(hero_id) REFERENCES heroes(hero_id)
         );
     `);
-
 });
+
+module.exports = db;

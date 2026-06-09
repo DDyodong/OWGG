@@ -2,7 +2,7 @@ from crawler import get_hero_stats
 from db import save_stats,  already_collected
 import time
 
-patch = "S16"  # 패치 번호 예시 : "S16", "S16M"(16시즌, 16 미드시즌)
+patch = "2026/06/08"  # 패치 번호 예시 : "S16", "S16M"(16시즌, 16 미드시즌)
 
 TIERS = ["Bronze",
     "Silver",
@@ -67,15 +67,23 @@ def make_url(tier, map_name):
 for tier in TIERS:
     for map_name in MAPS:
         url = make_url(tier, map_name)
-        if already_collected(patch, tier, map_name):  # 이미 저장된 조합 스킵
+        if already_collected(patch, tier, map_name):
             print(f"스킵: {tier} | {map_name}")
             continue
         
         print(f"수집중: {tier} | {map_name}")
-        url = make_url(tier, map_name)
-        heroes = get_hero_stats(url)
-        for hero in heroes:
-            save_stats(hero, tier, map_name, patch)
-        time.sleep(5)  # 요청마다 5초 대기 블리자드에서 요청 너무 많아서 차단함; 시간 걸려도 이렇게 하는게 나을듯.
+        
+        
+        while True:
+            try:
+                heroes = get_hero_stats(url)
+                for hero in heroes:
+                    save_stats(hero, tier, map_name, patch)
+                break  
+            except Exception as e:
+                print(f"에러: ({tier} | {map_name}): {e}")
+                print(f"1분 후 재시도...")
+                time.sleep(60) #1분 동안 대기후 재시도
+        time.sleep(5)
 
 print("수집 완료!")
