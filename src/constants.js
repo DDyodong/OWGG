@@ -65,6 +65,7 @@ export const MAP_LABELS = {
   runasapi: '루나사피',
   esperanca: '이스페란사',
   colosseo: '콜로세오',
+  'neon-junction': '네온 정션',
 };
 
 export const MAP_MODE_GROUPS = [
@@ -81,7 +82,7 @@ export const MAP_MODE_GROUPS = [
   {
     key: 'HYBRID',
     label: '혼합',
-    maps: ['numbani', 'midtown', 'blizzard-world', 'eichenwalde', 'kings-row', 'paraiso', 'hollywood'],
+    maps: ['numbani', 'midtown', 'blizzard-world', 'eichenwalde', 'kings-row', 'paraiso', 'hollywood', 'neon-junction'],
   },
   {
     key: 'PUSH',

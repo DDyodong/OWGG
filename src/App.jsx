@@ -13,6 +13,7 @@ const routes = [
   { path: '/', label: '추천' },
   { path: '/heroes', label: '영웅' },
   { path: '/maps', label: '맵' },
+  { path: '/meta', label: '메타지수' },
 ];
 
 const initialSelection = {
@@ -301,6 +302,10 @@ function heroPower(hero) {
   return (Number(hero.winrate) * 0.55) + (Number(hero.pickrate) * 0.35) - (Number(hero.banrate) * 0.05);
 }
 
+function scoreLabel(value) {
+  return Number(value || 0).toFixed(1);
+}
+
 function HeroCompare({ heroes }) {
   const qualified = heroes.filter((hero) => Number(hero.pickrate) >= 1);
   const best = [...qualified].sort((a, b) => heroPower(b) - heroPower(a))[0];
@@ -412,6 +417,276 @@ function HeroesPage({ filters, selection, setHeroStatsFilter, heroes, loading, e
   );
 }
 
+function useMetaIndexData(selection) {
+  const [data, setData] = useState([]);
+  const [latest, setLatest] = useState([]);
+  const [meta, setMeta] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      tier: selection.tier,
+      role: selection.role,
+      map: 'all-maps',
+    });
+    setLoading(true);
+    setError('');
+    fetch(`/api/stats/meta-index?${params}`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('메타지수를 불러오지 못했습니다.');
+        return response.json();
+      })
+      .then((payload) => {
+        setData(payload.data || []);
+        setLatest(payload.latest || []);
+        setMeta(payload.meta || null);
+      })
+      .catch((fetchError) => {
+        if (fetchError.name !== 'AbortError') setError(fetchError.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [selection.role, selection.tier]);
+
+  return { data, latest, meta, loading, error };
+}
+
+function MetaTierTabs({ filters, selection, onChange }) {
+  const tiers = ['all', ...filters.tiers.map(({ value }) => value).filter((value) => TIER_MARKS[value])];
+  return (
+    <div className="meta-tier-tabs" aria-label="메타지수 티어 선택">
+      {tiers.map((tier) => {
+        const tierMeta = TIER_MARKS[tier] || { label: TIER_LABELS[tier] || tier };
+        return (
+          <button type="button" className={selection.tier === tier ? 'active' : ''} onClick={() => onChange(tier)} key={tier}>
+            {tierMeta.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MetaHeroPicker({ heroes, selectedHeroIds, onToggle, onReset }) {
+  const groupedHeroes = roleOptions.slice(1).map(([role, label]) => ({
+    role,
+    label,
+    heroes: heroes.filter((hero) => hero.role === role),
+  })).filter((group) => group.heroes.length);
+
+  return (
+    <section className="meta-picker-panel" aria-label="메타지수 영웅 선택">
+      <div className="meta-picker-summary">
+        <span>영웅 {heroes.length}명 중 {selectedHeroIds.length}명 선택</span>
+        <button type="button" onClick={onReset}>초기화</button>
+      </div>
+      {groupedHeroes.map((group) => (
+        <div className="meta-role-section" key={group.role}>
+          <div className="meta-role-title">
+            <strong>{group.label}</strong>
+            <span>{selectedHeroIds.filter((heroId) => group.heroes.some((hero) => hero.hero_id === heroId)).length}/{group.heroes.length}</span>
+          </div>
+          <div className="meta-hero-picker">
+            {group.heroes.map((hero) => {
+              const active = selectedHeroIds.includes(hero.hero_id);
+              return (
+                <button
+                  type="button"
+                  className={`meta-hero-button ${active ? 'active' : ''}`}
+                  onClick={() => onToggle(hero.hero_id)}
+                  title={`${hero.name} ${scoreLabel(hero.metaIndex?.score)}점`}
+                  aria-pressed={active}
+                  key={hero.hero_id}
+                >
+                  <img src={hero.portrait} alt="" loading="lazy" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function MetaIndexGraph({ rows, selectedHeroIds }) {
+  const baselineScore = 150;
+  const selectedRows = rows.filter((row) => selectedHeroIds.includes(row.hero_id));
+  const dates = Array.from(new Set(rows.map((row) => row.date))).sort();
+  const heroes = selectedHeroIds.map((heroId, index) => {
+    const points = selectedRows
+      .filter((row) => row.hero_id === heroId)
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const hero = points.at(-1);
+    return { heroId, hero, points, color: ['#ff7849', '#38d6da', '#8fc8ff', '#d79aff', '#73e3a1', '#f0bf56'][index % 6] };
+  }).filter((item) => item.hero);
+
+  const allScores = heroes.flatMap(({ points }) => points.map((point) => Number(point.metaIndex.score || 0)));
+  const scoreFloor = Math.min(...allScores, baselineScore);
+  const scoreCeil = Math.max(...allScores, baselineScore);
+  const scorePadding = Math.max(18, (scoreCeil - scoreFloor) * 0.18);
+  const minScore = Math.max(0, Math.floor(scoreFloor - scorePadding));
+  const maxScore = Math.min(300, Math.ceil(scoreCeil + scorePadding));
+  const width = 960;
+  const height = 360;
+  const padding = { top: 34, right: 44, bottom: 26, left: 44 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const xFor = (date) => padding.left + (dates.length <= 1 ? plotWidth / 2 : (dates.indexOf(date) / (dates.length - 1)) * plotWidth);
+  const yFor = (score) => padding.top + ((maxScore - Number(score || 0)) / (maxScore - minScore)) * plotHeight;
+  const baselineY = yFor(baselineScore);
+  const avatarSize = 24;
+  const avatarGap = 30;
+  const endpointAvatars = heroes
+    .map(({ heroId, points }) => {
+      const latestPoint = points.at(-1);
+      if (!latestPoint) return null;
+      const rawY = yFor(latestPoint.metaIndex.score) - (avatarSize / 2);
+      return {
+        heroId,
+        latestPoint,
+        pointX: xFor(latestPoint.date),
+        pointY: yFor(latestPoint.metaIndex.score),
+        x: Math.min(xFor(latestPoint.date) + 7, width - padding.right - avatarSize),
+        y: Math.min(Math.max(rawY, padding.top - 10), height - padding.bottom - avatarSize),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.y - b.y)
+    .map((avatar) => ({ ...avatar }));
+
+  endpointAvatars.forEach((avatar, index) => {
+    if (index === 0) return;
+    const previous = endpointAvatars[index - 1];
+    if (avatar.y - previous.y < avatarGap) avatar.y = previous.y + avatarGap;
+  });
+  for (let index = endpointAvatars.length - 1; index >= 0; index -= 1) {
+    const avatar = endpointAvatars[index];
+    const maxY = height - padding.bottom - avatarSize;
+    if (avatar.y > maxY) {
+      const overflow = avatar.y - maxY;
+      for (let shiftIndex = index; shiftIndex >= 0; shiftIndex -= 1) {
+        endpointAvatars[shiftIndex].y = Math.max(padding.top - 10, endpointAvatars[shiftIndex].y - overflow);
+      }
+    }
+  }
+  const avatarByHero = new Map(endpointAvatars.map((avatar) => [avatar.heroId, avatar]));
+
+  if (!heroes.length) {
+    return <div className="meta-graph empty-chart">초상화를 눌러 메타지수 그래프를 표시하세요.</div>;
+  }
+
+  return (
+    <section className="meta-graph" aria-label="메타지수 선 그래프">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        {[minScore, baselineScore, maxScore].map((score) => (
+          <line className={score === baselineScore ? 'meta-baseline' : 'grid-line'} x1={padding.left} x2={width - padding.right} y1={yFor(score)} y2={yFor(score)} key={score} />
+        ))}
+        <text className="baseline-label" x={width - padding.right - 96} y={baselineY - 8}>150점 기준선</text>
+        {heroes.map(({ heroId, points, color }) => {
+          const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(point.date)} ${yFor(point.metaIndex.score)}`).join(' ');
+          const avatar = avatarByHero.get(heroId);
+          return (
+            <g key={heroId}>
+              <path className="meta-line" d={path} style={{ '--line-color': color }} />
+              {points.map((point) => (
+                <circle className="meta-dot" cx={xFor(point.date)} cy={yFor(point.metaIndex.score)} r="4" style={{ '--line-color': color }} key={`${heroId}-${point.date}`} />
+              ))}
+              {avatar && (
+                <>
+                <line className="meta-avatar-leader" x1={avatar.pointX} y1={avatar.pointY} x2={avatar.x + 12} y2={avatar.y + 12} style={{ '--line-color': color }} />
+                <g transform={`translate(${avatar.x} ${avatar.y})`}>
+                  <circle className="meta-avatar-ring" cx="12" cy="12" r="13" style={{ '--line-color': color }} />
+                  <clipPath id={`meta-avatar-${heroId}`}><circle cx="12" cy="12" r="11" /></clipPath>
+                  <image href={avatar.latestPoint.portrait} x="1" y="1" width="22" height="22" clipPath={`url(#meta-avatar-${heroId})`} />
+                </g>
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </section>
+  );
+}
+
+function MetaIndexPage({ filters, selection, updateSelection }) {
+  const [subrole, setSubrole] = useState('all');
+  const [selectedHeroIds, setSelectedHeroIds] = useState([]);
+  const { data, latest, meta, loading, error } = useMetaIndexData(selection);
+  const subroles = useMemo(() => {
+    const values = filters?.heroes
+      ?.filter((hero) => selection.role === 'all' || hero.role === selection.role)
+      .map((hero) => hero.subrole)
+      .filter(Boolean) || [];
+    return ['all', ...Array.from(new Set(values)).sort()];
+  }, [filters, selection.role]);
+  const visibleLatest = useMemo(() => latest
+    .filter((hero) => subrole === 'all' || hero.subrole === subrole), [latest, subrole]);
+  const visibleRows = useMemo(() => data
+    .filter((row) => subrole === 'all' || row.subrole === subrole), [data, subrole]);
+
+  useEffect(() => {
+    if (subrole !== 'all' && !subroles.includes(subrole)) setSubrole('all');
+  }, [subrole, subroles]);
+
+  useEffect(() => {
+    if (!visibleLatest.length) {
+      setSelectedHeroIds([]);
+      return;
+    }
+    setSelectedHeroIds((current) => {
+      const available = new Set(visibleLatest.map((hero) => hero.hero_id));
+      const kept = current.filter((heroId) => available.has(heroId));
+      return kept.length ? kept : visibleLatest.slice(0, 3).map((hero) => hero.hero_id);
+    });
+  }, [visibleLatest]);
+
+  const toggleHero = (heroId) => {
+    setSelectedHeroIds((current) => (
+      current.includes(heroId)
+        ? current.filter((selectedHeroId) => selectedHeroId !== heroId)
+        : [...current, heroId]
+    ));
+  };
+  const resetSelection = () => setSelectedHeroIds(visibleLatest.slice(0, 3).map((hero) => hero.hero_id));
+
+  return (
+    <section className="meta-workspace page-first-panel">
+      <aside className="meta-sidebar">
+        {filters ? (
+          <>
+            <MetaTierTabs filters={filters} selection={selection} onChange={(tier) => updateSelection('tier', tier)} />
+            <div className="meta-side-controls">
+              <RoleButtons value={selection.role} onChange={(role) => updateSelection('role', role)} />
+              <SubroleButtons values={subroles} value={subrole} onChange={setSubrole} />
+            </div>
+          </>
+        ) : <div className="loading">필터를 불러오고 있습니다.</div>}
+        {!loading && !error && (
+          <MetaHeroPicker heroes={visibleLatest} selectedHeroIds={selectedHeroIds} onToggle={toggleHero} onReset={resetSelection} />
+        )}
+      </aside>
+      <section className="meta-main-panel">
+        <div className="meta-main-heading">
+          <div>
+            <p className="eyebrow">META INDEX</p>
+            <h1>메타지수</h1>
+          </div>
+          <span>{meta?.latestDate || '-'} · 모든 맵 · 150점 기준선</span>
+        </div>
+        {loading && <div className="loading">메타지수를 계산하고 있습니다.</div>}
+        {!loading && error && <div className="empty-state">{error}</div>}
+        {!loading && !error && <MetaIndexGraph rows={visibleRows} selectedHeroIds={selectedHeroIds} />}
+      </section>
+    </section>
+  );
+}
+
 function MapRecommendationList({ heroes }) {
   const recommended = [...heroes]
     .filter((hero) => Number(hero.pickrate || 0) >= 1)
@@ -516,9 +791,10 @@ function MapPage({ filters, selection, updateSelection, heroes, mapMedia, loadin
   return (
     <>
       <section
-        className={`map-spotlight page-first-panel ${selectedScreenshot ? 'has-image' : ''}`}
+        className={`map-spotlight page-first-panel ${selectedScreenshot ? 'has-image' : 'no-image'}`}
         style={selectedScreenshot ? { backgroundImage: `url(${selectedScreenshot})` } : undefined}
       >
+        {!selectedScreenshot && selectedMap && <span className="map-fallback-mark">{selectedLabel}</span>}
         <div className="map-spotlight-copy">
           <p className="eyebrow">MAP STATS</p>
           <h1>{selectedLabel}</h1>
@@ -549,8 +825,9 @@ function MapPage({ filters, selection, updateSelection, heroes, mapMedia, loadin
                     return (
                       <button
                         type="button"
-                        className={`map-button ${isActive ? 'active' : ''}`}
+                        className={`map-button ${isActive ? 'active' : ''} ${media?.screenshot ? 'has-image' : 'no-image'}`}
                         style={media?.screenshot ? { backgroundImage: `url(${media.screenshot})` } : undefined}
+                        data-map={MAP_LABELS[mapKey] || media?.name || mapKey}
                         onClick={() => selectMap(mapKey)}
                         key={mapKey}
                       >
@@ -619,6 +896,9 @@ function App() {
         )}
         {path === '/heroes' && (
           <HeroesPage filters={filters} selection={selection} setHeroStatsFilter={setHeroStatsFilter} heroes={heroes} loading={loading} error={error} />
+        )}
+        {path === '/meta' && (
+          <MetaIndexPage filters={filters} selection={selection} updateSelection={updateSelection} />
         )}
         {isMapsPath(path) && (
           <MapPage

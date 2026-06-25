@@ -6,6 +6,10 @@ const router = express.Router();
 const allowedSorts = new Set(['winrate', 'pickrate', 'banrate', 'name']);
 const recommendationRoles = ['tank', 'damage', 'support'];
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function all(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (error, rows) => (error ? reject(error) : resolve(rows)));
@@ -52,6 +56,47 @@ function recommendationScore(hero, trends) {
   };
 }
 
+function metaScore(hero, previousHero) {
+  const pickrate = Number(hero.pickrate || 0);
+  const winrate = Number(hero.winrate || 0);
+  const banrate = Number(hero.banrate || 0);
+  const previousTrend = previousHero
+    ? ((winrate - Number(previousHero.winrate || 0)) * 0.7)
+      + ((pickrate - Number(previousHero.pickrate || 0)) * 0.3)
+    : 0;
+
+  const winImpact = (winrate - 50) * 3.2;
+  const pickImpact = Math.sqrt(Math.max(pickrate, 0)) * 1.6;
+  const banImpact = Math.sqrt(Math.min(Math.max(banrate, 0), 35)) * 0.9;
+  const trendImpact = Math.max(previousTrend, 0) * 1.8;
+  const stabilityPenalty = Math.max(5 - pickrate, 0) * 0.8;
+  const lowWinPenalty = Math.max(49 - winrate, 0) * 2.0;
+  const overBanPenalty = Math.max(banrate - 35, 0) * 0.25;
+  const centeredScore = 50
+    + winImpact
+    + pickImpact
+    + banImpact
+    + trendImpact
+    - stabilityPenalty
+    - lowWinPenalty
+    - overBanPenalty;
+  const score = 150 + ((centeredScore - 50) * 3.5);
+
+  return {
+    score: Number(clamp(score, 0, 300).toFixed(2)),
+    trend: Number(previousTrend.toFixed(2)),
+    components: {
+      win: Number(winImpact.toFixed(2)),
+      pick: Number(pickImpact.toFixed(2)),
+      ban: Number(banImpact.toFixed(2)),
+      trend: Number(trendImpact.toFixed(2)),
+      stabilityPenalty: Number(stabilityPenalty.toFixed(2)),
+      lowWinPenalty: Number(lowWinPenalty.toFixed(2)),
+      overBanPenalty: Number(overBanPenalty.toFixed(2)),
+    },
+  };
+}
+
 async function recentPatches(limit = 3) {
   const rows = await all(
     `SELECT DISTINCT patch
@@ -76,6 +121,71 @@ router.get('/filters', async (_req, res, next) => {
            ORDER BY CASE role WHEN 'tank' THEN 1 WHEN 'damage' THEN 2 ELSE 3 END, name`),
     ]);
     res.json({ tiers, maps, patches, heroes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/meta-index', async (req, res, next) => {
+  try {
+    const tier = req.query.tier || 'all';
+    const mapName = req.query.map || 'all-maps';
+    const role = req.query.role || 'all';
+    const conditions = ['s.map_name = ?'];
+    const params = [mapName];
+
+    if (tier !== 'all') {
+      conditions.push('s.tier = ?');
+      params.push(tier);
+    }
+    if (role !== 'all') {
+      conditions.push('h.role = ?');
+      params.push(role);
+    }
+
+    const rows = await all(
+      `SELECT s.patch date, h.hero_id, h.name, h.role, h.subrole, h.portrait, h.color,
+              ROUND(AVG(s.pickrate), 2) pickrate,
+              ROUND(AVG(s.winrate), 2) winrate,
+              ROUND(AVG(s.banrate), 2) banrate,
+              COUNT(*) sample_count
+       FROM hero_stats s
+       JOIN heroes h ON h.hero_id = s.hero_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY s.patch, h.hero_id
+       ORDER BY s.patch ASC, h.name ASC`,
+      params,
+    );
+
+    const previousByHero = new Map();
+    const data = rows.map((row) => {
+      const previous = previousByHero.get(row.hero_id);
+      const scored = {
+        ...withArt(row),
+        metaIndex: metaScore(row, previous),
+      };
+      previousByHero.set(row.hero_id, row);
+      return scored;
+    });
+
+    const latestDate = data.at(-1)?.date || null;
+    const latest = latestDate
+      ? data
+        .filter((row) => row.date === latestDate)
+        .sort((a, b) => b.metaIndex.score - a.metaIndex.score)
+      : [];
+
+    res.json({
+      meta: {
+        tier,
+        map: mapName,
+        role,
+        latestDate,
+        count: data.length,
+      },
+      data,
+      latest,
+    });
   } catch (error) {
     next(error);
   }
