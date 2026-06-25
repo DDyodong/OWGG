@@ -1,8 +1,9 @@
 from crawler import get_hero_stats
-from db import save_stats,  already_collected
+from db import save_collection, already_collected
 import time
+from datetime import date
 
-patch = "2026/06/08"  # 패치 번호 예시 : "S16", "S16M"(16시즌, 16 미드시즌)
+patch = date.today().isoformat()
 
 TIERS = ["Bronze",
     "Silver",
@@ -19,7 +20,7 @@ MAPS = [
     "all-maps",
     "antarctic-peninsula",
     "nepal",
-    "lijiang-tower",
+    "lijiang-tower", 
     "busan",
     "samoa",
     "oasis",
@@ -46,7 +47,10 @@ MAPS = [
     "runasapi",
     "esperanca",
     "colosseo",
+    "neon-junction",
 ]
+
+COMPETITIVE_RQ = 1
 
 BASE_URL = (
     "https://overwatch.blizzard.com/ko-kr/rates/"
@@ -54,14 +58,15 @@ BASE_URL = (
     "&map={map_name}"
     "&region=Asia"
     "&role=All"
-    "&rq=2"
+    "&rq={rq}"
     "&tier={tier}"
 )
 
 def make_url(tier, map_name):
     return BASE_URL.format(
         tier=tier,
-        map_name=map_name
+        map_name=map_name,
+        rq=COMPETITIVE_RQ
     )
 
 for tier in TIERS:
@@ -72,13 +77,13 @@ for tier in TIERS:
             continue
         
         print(f"수집중: {tier} | {map_name}")
+        print(url)
         
         
         while True:
             try:
                 heroes = get_hero_stats(url)
-                for hero in heroes:
-                    save_stats(hero, tier, map_name, patch)
+                save_collection(heroes, tier, map_name, patch)
                 break  
             except Exception as e:
                 print(f"에러: ({tier} | {map_name}): {e}")
